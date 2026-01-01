@@ -18,8 +18,9 @@ import torch.distributed as dist
 from contextlib import nullcontext
 
 from nanochat.common import compute_init, compute_cleanup, get_base_dir, print0, DummyWandb, autodetect_device_type
-from nanochat.checkpoint_manager import load_model
-from nanochat.checkpoint_manager import save_checkpoint
+# Use MoE-aware checkpoint manager in scripts_moe
+from nanochat_moe.checkpoint_manager import load_model
+from nanochat_moe.checkpoint_manager import save_checkpoint
 from nanochat.engine import Engine
 from scripts.chat_eval import run_chat_eval
 

@@ -9,7 +9,8 @@ import torch
 from nanochat.common import compute_init, autodetect_device_type
 from contextlib import nullcontext
 from nanochat.engine import Engine
-from nanochat.checkpoint_manager import load_model
+# Use MoE-aware checkpoint manager for scripts_moe
+from nanochat_moe.checkpoint_manager import load_model
 
 parser = argparse.ArgumentParser(description='Chat with the model')
 parser.add_argument('-i', '--source', type=str, default="sft", help="Source of the model: sft|mid|rl")

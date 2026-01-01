@@ -24,7 +24,8 @@ import torch
 import torch.distributed as dist
 
 from nanochat.common import compute_init, compute_cleanup, print0, get_base_dir, DummyWandb
-from nanochat.checkpoint_manager import save_checkpoint, load_model
+# Use MoE-aware checkpoint manager for scripts_moe
+from nanochat_moe.checkpoint_manager import save_checkpoint, load_model
 from nanochat.engine import Engine
 from tasks.gsm8k import GSM8K
 

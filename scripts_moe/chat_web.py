@@ -46,7 +46,8 @@ from typing import List, Optional, AsyncGenerator
 from dataclasses import dataclass
 from contextlib import nullcontext
 from nanochat.common import compute_init, autodetect_device_type
-from nanochat.checkpoint_manager import load_model
+# Use MoE-aware checkpoint manager for scripts_moe
+from nanochat_moe.checkpoint_manager import load_model
 from nanochat.engine import Engine
 
 # Abuse prevention limits

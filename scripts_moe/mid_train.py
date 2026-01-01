@@ -16,11 +16,11 @@ import time
 import wandb
 import torch
 from contextlib import nullcontext
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type
-from nanochat.tokenizer import get_token_bytes
-from nanochat.checkpoint_manager import save_checkpoint
-from nanochat.loss_eval import evaluate_bpb
-from nanochat.checkpoint_manager import load_model
+from nanochat_moe.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type
+from nanochat_moe.tokenizer import get_token_bytes
+from nanochat_moe.checkpoint_manager import save_checkpoint
+from nanochat_moe.loss_eval import evaluate_bpb
+from nanochat_moe.checkpoint_manager import load_model
 import torch.distributed as dist
 
 from tasks.common import TaskMixture
@@ -207,7 +207,8 @@ while True:
 
     # save checkpoint at the end of the run (only on master process)
     if master_process and last_step and not dry_run:
-        output_dirname = f"d{depth}" # e.g. d12
+        # output_dirname = f"d{depth}" # e.g. d12
+        output_dirname = f"d{depth}_matrixlr{matrix_lr}_embedlr{embedding_lr}" # e.g. d12
         checkpoint_dir = os.path.join(base_dir, "mid_checkpoints", output_dirname)
         save_checkpoint(
             checkpoint_dir,
