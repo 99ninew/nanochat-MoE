@@ -9,10 +9,12 @@ import sys
 # embedding_lr = 0.2
 # matrix_lr = 0.02
 search_space = {
+    # "learning_rate": [0.01, 0.005, 0.001]
+    "learning_rate": [6e-4, 5e-4, 4e-4, 7e-4]
     # "matrix_lr": [0.01, 0.02, 0.04],
     # "embedding_lr": [0.1, 0.2],
-    "matrix_lr": [0.005, 0.01],
-    "embedding_lr": [0.01, 0.05, 0.1],
+    # "matrix_lr": [0.005, 0.01],
+    # "embedding_lr": [0.01, 0.05, 0.1],
     # "unembedding_lr": [0.004],
     # "init_lr_frac": [0.5, 1.0],
 }
@@ -70,7 +72,7 @@ def main():
             "torchrun",
             "--standalone",
             f"--nproc_per_node={nproc}",
-            "-m", "scripts_moe.mid_train",
+            "-m", "scripts.mid_train",
             "--"
         ] + run_args + fixed_args
 

@@ -209,13 +209,13 @@ cd "$REPO_ROOT"
 # curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # # run midtraining and eval the model
-# python3 scripts_moe/sweep_mid.py
-# sweep_exp=("d6_matrixlr0.01_embedlr0.01" "d6_matrixlr0.01_embedlr0.05")
+python3 scripts/sweep_mid.py
+# sweep_exp=("d6_lr0.05" "d6_lr0.01" "d6_lr0.005")
 # for exp in "${sweep_exp[@]}"; do
 #     MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts_moe.chat_eval -- --model-tag=$exp -i mid
 # done
 
-MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN --device_batch_size=8 --max_seq_len=1024 --total_batch_size=524288 
+# MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN --device_batch_size=8 --max_seq_len=1024 --total_batch_size=524288 
 # MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts_moe.chat_eval -- -i mid
 
 # # -----------------------------------------------------------------------------
@@ -243,4 +243,4 @@ MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE 
 # # -----------------------------------------------------------------------------
 # # Generate the full report by putting together all the sections
 # report.md is the output and will be copied to current directory for convenience
-python -m nanochat.report generate
+python -m nanochat_moe.report generate

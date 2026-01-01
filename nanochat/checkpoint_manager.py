@@ -8,10 +8,10 @@ import json
 import logging
 import torch
 
-from nanochat_moe.common import get_base_dir
-from nanochat_moe.gpt import GPT, GPTConfig
-from nanochat_moe.tokenizer import get_tokenizer
-from nanochat_moe.common import setup_default_logging
+from nanochat.common import get_base_dir
+from nanochat.gpt import GPT, GPTConfig
+from nanochat.tokenizer import get_tokenizer
+from nanochat.common import setup_default_logging
 
 # Set up logging
 setup_default_logging()
@@ -79,7 +79,7 @@ def build_model(checkpoint_dir, step, device, phase):
         model = GPT(model_config)
     # Load the model state
     model.to_empty(device=device)
-    model.init_weights() # note: this is dumb, but we need to init the rotary embeddings. TODO: fix model re-init
+    # Weights are already initialized in GPT.__init__ via self.apply(self._init_weights)
     model.load_state_dict(model_data, strict=True, assign=True)
     # Put the model in the right training phase / mode
     if phase == "eval":
@@ -87,9 +87,19 @@ def build_model(checkpoint_dir, step, device, phase):
     else:
         model.train()
     # Load the Tokenizer
-    tokenizer = get_tokenizer()
-    # Sanity check: compatibility between model and tokenizer
-    assert tokenizer.get_vocab_size() == model_config_kwargs["vocab_size"]
+    # NOTE: nanoMoE-style training typically uses GPT-2 tokens (50257) but pads the model
+    # vocab_size up to 50304 for efficiency. In that case we still must use GPT-2 tokenization
+    # (otherwise token ids can exceed the embedding size and crash in torch.compile kernels).
+    vocab_size = int(model_config_kwargs.get("vocab_size"))
+    use_tiktoken_gpt2 = vocab_size in {50257, 50304}
+    tokenizer = get_tokenizer(use_tiktoken_gpt2=use_tiktoken_gpt2)
+    # Basic compatibility check: tokenizer ids must fit in the model embedding table.
+    tok_vocab = int(tokenizer.get_vocab_size())
+    assert tok_vocab <= vocab_size, (
+        f"Tokenizer vocab_size ({tok_vocab}) exceeds model vocab_size ({vocab_size}). "
+        "This will produce out-of-bounds token ids. "
+        "Fix by using GPT-2 tokenizer (50257, padded model vocab 50304) or resizing the model vocab."
+    )
     return model, tokenizer, meta_data
 
 

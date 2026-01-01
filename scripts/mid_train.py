@@ -43,6 +43,8 @@ unembedding_lr = 0.004
 embedding_lr = 0.2
 matrix_lr = 0.02
 init_lr_frac = 1.0 # initial learning rate is this fraction of the base learning rate
+learning_rate = 0.05
+betas = (0.9, 0.95) 
 weight_decay = 0.0
 eval_every = 150 # -1 = disable
 eval_tokens = 20*524288
@@ -73,7 +75,7 @@ if pretrain_batch_size is not None and device_batch_size > pretrain_batch_size:
 orig_model = model
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
-num_flops_per_token = model.estimate_flops()
+num_flops_per_token = model.estimate_flops(max_seq_len)
 tokens_per_fwdbwd = device_batch_size * max_seq_len # tokens per iteration for a single rank
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
 assert total_batch_size % world_tokens_per_fwdbwd == 0
@@ -81,16 +83,28 @@ grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd
 print0(f"Tokens / micro-batch / rank: {device_batch_size} x {max_seq_len} = {tokens_per_fwdbwd:,}")
 print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
 print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
-token_bytes = get_token_bytes(device=device)
+token_bytes = get_token_bytes(device=device, use_tiktoken_gpt2=True)
 
-# Initialize the Optimizer (Muon for Linear layers, AdamW for embedding and lm_head)
-optimizers = model.setup_optimizers(unembedding_lr=unembedding_lr, embedding_lr=embedding_lr, matrix_lr=matrix_lr, weight_decay=weight_decay)
-adamw_optimizer, muon_optimizer = optimizers
-# Override the initial learning rate as a fraction of the base learning rate
-for opt in optimizers:
-    for group in opt.param_groups:
-        group["lr"] = group["lr"] * init_lr_frac
-        group["initial_lr"] = group["lr"] # save the initial learning so we can decay easily later
+# Sanity print: tokenizer ids must fit inside model vocab (esp. when vocab_size=50304 padded GPT-2)
+print0(f"Model vocab_size: {model.config.vocab_size}")
+print0(f"Tokenizer vocab_size: {tokenizer.get_vocab_size()}")
+
+# Initialize the Optimizer (AdamW for all parameters) - BEFORE DDP wrapping (matching nanoMoE)
+adamw_optimizer = model.configure_optimizers(
+    weight_decay=weight_decay,
+    learning_rate=learning_rate,
+    betas=betas,
+    device_type=device_type,
+)
+optimizers = [adamw_optimizer]
+# # Initialize the Optimizer (Muon for Linear layers, AdamW for embedding and lm_head)
+# optimizers = model.setup_optimizers(unembedding_lr=unembedding_lr, embedding_lr=embedding_lr, matrix_lr=matrix_lr, weight_decay=weight_decay)
+# adamw_optimizer, muon_optimizer = optimizers
+# # Override the initial learning rate as a fraction of the base learning rate
+# for opt in optimizers:
+#     for group in opt.param_groups:
+#         group["lr"] = group["lr"] * init_lr_frac
+#         group["initial_lr"] = group["lr"] # save the initial learning so we can decay easily later
 
 # Midtraining data mixture and DataLoader
 base_dir = get_base_dir()
@@ -146,6 +160,20 @@ def mid_data_generator(split):
             scratch[i] = token_buffer.popleft()
         inputs_cpu = scratch[:-1].to(dtype=torch.int32)
         targets_cpu = scratch[1:]
+
+        # Early token-id range check on CPU to avoid opaque torch.compile CUDA OOB asserts.
+        # Only do this for a few batches to keep overhead minimal.
+        if it <= 5:
+            min_id = int(inputs_cpu.min().item())
+            max_id = int(inputs_cpu.max().item())
+            vocab_limit = int(model.config.vocab_size)
+            if not (0 <= min_id and max_id < vocab_limit):
+                raise ValueError(
+                    f"Token id out of range: min={min_id}, max={max_id}, expected within [0, {vocab_limit}). "
+                    f"Tokenizer vocab_size={int(tokenizer.get_vocab_size())}. "
+                    "This usually means the tokenizer used for midtraining doesn't match the model vocab."
+                )
+
         inputs = inputs_cpu.view(device_batch_size, max_seq_len).to(device=device, dtype=torch.int32, non_blocking=True)
         targets = targets_cpu.view(device_batch_size, max_seq_len).to(device=device, dtype=torch.int64, non_blocking=True)
         if split == "train":
@@ -207,13 +235,14 @@ while True:
 
     # save checkpoint at the end of the run (only on master process)
     if master_process and last_step and not dry_run:
-        output_dirname = f"d{depth}" # e.g. d12
+        # output_dirname = f"d{depth}" # e.g. d12
+        output_dirname = f"d{depth}_lr{learning_rate}"
         checkpoint_dir = os.path.join(base_dir, "mid_checkpoints", output_dirname)
         save_checkpoint(
             checkpoint_dir,
             step,
             orig_model.state_dict(),
-            [opt.state_dict() for opt in optimizers], # TODO: make sure saving across ranks is done correctly
+            adamw_optimizer.state_dict(), # TODO: make sure saving across ranks is done correctly
             {
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
@@ -239,22 +268,17 @@ while True:
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
-            loss = model(x, y)
+            _, loss = model(x, y)  # nanoMoE model returns (logits, loss)
         train_loss = loss.detach() # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
-    # step the optimizers
+    # step the optimizer(s)
     lrm = get_lr_multiplier(progress)
-    for opt in optimizers:
-        for group in opt.param_groups:
-            group["lr"] = group["initial_lr"] * lrm
-    muon_momentum = get_muon_momentum(step)
-    for group in muon_optimizer.param_groups:
-        group["momentum"] = muon_momentum
-    for opt in optimizers:
-        opt.step()
+    for group in adamw_optimizer.param_groups:
+        group["lr"] = learning_rate * init_lr_frac * lrm
+    adamw_optimizer.step()
     model.zero_grad(set_to_none=True)
     synchronize()
     t1 = time.time()

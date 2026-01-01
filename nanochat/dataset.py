@@ -14,7 +14,12 @@ import requests
 import pyarrow.parquet as pq
 from multiprocessing import Pool
 
-from nanochat_moe.common import get_base_dir
+from nanochat.common import get_base_dir
+
+# Support for loading openwebtext from HuggingFace datasets
+USE_OPENWEBTEXT = os.environ.get("USE_OPENWEBTEXT", "false").lower() == "true"
+if USE_OPENWEBTEXT:
+    from datasets import load_dataset
 
 # -----------------------------------------------------------------------------
 # The specifics of the current pretraining dataset
@@ -23,12 +28,8 @@ from nanochat_moe.common import get_base_dir
 BASE_URL = "https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main"
 MAX_SHARD = 1822 # the last datashard is shard_01822.parquet
 index_to_filename = lambda index: f"shard_{index:05d}.parquet" # format of the filenames
-# Support custom data directory via NANOCHAT_DATA_DIR environment variable
-if os.environ.get("NANOCHAT_DATA_DIR"):
-    DATA_DIR = os.environ.get("NANOCHAT_DATA_DIR")
-else:
-    base_dir = get_base_dir()
-    DATA_DIR = os.path.join(base_dir, "base_data")
+base_dir = get_base_dir()
+DATA_DIR = os.path.join(base_dir, "base_data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # -----------------------------------------------------------------------------
@@ -51,6 +52,41 @@ def parquets_iter_batched(split, start=0, step=1):
     - start/step are useful for skipping rows in DDP. e.g. start=rank, step=world_size
     """
     assert split in ["train", "val"], "split must be 'train' or 'val'"
+    
+    # If using openwebtext, load from HuggingFace datasets
+    if USE_OPENWEBTEXT:
+        # Load openwebtext dataset from local cache
+        # Note: openwebtext only has 'train' split, so we use it for both train and val
+        cache_dir = os.environ.get("HF_DATASETS_CACHE", "/root/autodl-tmp/huggingface/datasets")
+        dataset = load_dataset("openwebtext", "plain_text", cache_dir=cache_dir, split="train")
+        
+        # Batch size for efficiency (similar to row_group size)
+        batch_size = 1024
+        dataset_size = len(dataset)
+        
+        # For validation, use the last 1% of the dataset
+        if split == "val":
+            val_start = int(dataset_size * 0.99)
+            dataset_size = dataset_size - val_start
+            dataset_offset = val_start
+        else:
+            dataset_offset = 0
+            # For training, use 99% of the dataset
+            dataset_size = int(dataset_size * 0.99)
+        
+        # Iterate with start/step for DDP support
+        for i in range(start, dataset_size, step * batch_size):
+            batch_texts = []
+            for j in range(i, min(i + step * batch_size, dataset_size), step):
+                idx = dataset_offset + j
+                if idx < len(dataset):
+                    text = dataset[idx]["text"]
+                    batch_texts.append(text)
+            if batch_texts:
+                yield batch_texts
+        return
+    
+    # Original parquet file iteration
     parquet_paths = list_parquet_files()
     parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
     for filepath in parquet_paths:
@@ -118,6 +154,12 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--num-files", type=int, default=-1, help="Number of shards to download (default: -1), -1 = disable")
     parser.add_argument("-w", "--num-workers", type=int, default=4, help="Number of parallel download workers (default: 4)")
     args = parser.parse_args()
+
+    # If using openwebtext, skip download
+    if USE_OPENWEBTEXT:
+        print("Using openwebtext dataset from local cache. Skipping download.")
+        print(f"Set USE_OPENWEBTEXT=true to use openwebtext dataset")
+        exit(0)
 
     num = MAX_SHARD + 1 if args.num_files == -1 else min(args.num_files, MAX_SHARD + 1)
     ids_to_download = list(range(num))
