@@ -43,7 +43,7 @@ unembedding_lr = 0.004
 embedding_lr = 0.2
 matrix_lr = 0.02
 init_lr_frac = 1.0 # initial learning rate is this fraction of the base learning rate
-learning_rate = 0.05
+learning_rate = 3e-4
 betas = (0.9, 0.95) 
 weight_decay = 0.0
 eval_every = 150 # -1 = disable

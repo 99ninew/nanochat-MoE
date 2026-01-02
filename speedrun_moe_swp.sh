@@ -243,4 +243,4 @@ python3 scripts/sweep_mid.py
 # # -----------------------------------------------------------------------------
 # # Generate the full report by putting together all the sections
 # report.md is the output and will be copied to current directory for convenience
-python -m nanochat_moe.report generate
+python -m nanochat.report generate

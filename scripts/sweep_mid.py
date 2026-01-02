@@ -10,7 +10,7 @@ import sys
 # matrix_lr = 0.02
 search_space = {
     # "learning_rate": [0.01, 0.005, 0.001]
-    "learning_rate": [6e-4, 5e-4, 4e-4, 7e-4]
+    "learning_rate": [3e-4, 1e-4, 8e-5]
     # "matrix_lr": [0.01, 0.02, 0.04],
     # "embedding_lr": [0.1, 0.2],
     # "matrix_lr": [0.005, 0.01],

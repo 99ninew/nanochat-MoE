@@ -14,6 +14,7 @@ set -euo pipefail
 # Default intermediate artifacts directory is in ~/.cache/nanochat-moe
 USERNAME="jnminniewang"
 export OMP_NUM_THREADS=1
+export NANOCHAT_LOG_ALL_RANKS=1
 # Reduce CUDA fragmentation and allow expandable segments to avoid OOM from fragmentation
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128,expandable_segments:True"
 # repo root (script directory)
@@ -215,14 +216,14 @@ cd "$REPO_ROOT"
 #     MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts_moe.chat_eval -- --model-tag=$exp -i mid
 # done
 
-MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN --device_batch_size=8 --max_seq_len=1024 --total_batch_size=524288 
+# MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN --device_batch_size=8 --max_seq_len=1024 --total_batch_size=524288 
 # MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts_moe.chat_eval -- -i mid
 
 # # -----------------------------------------------------------------------------
 # # Supervised Finetuning (domain adaptation to each sequence all by itself per row)
-
+WANDB_RUN=moe_sft
 # # train sft and re-eval right away (should see a small bump)
-# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN
 # torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft
 
 # # chat with the model over CLI! Leave out the -p to chat interactively

@@ -17,8 +17,35 @@ from nanochat.common import setup_default_logging
 setup_default_logging()
 logger = logging.getLogger(__name__)
 def log0(message):
-    if int(os.environ.get('RANK', 0)) == 0:
+    rank = int(os.environ.get('RANK', 0))
+    # Default: only rank0 logs to avoid spam.
+    # Set NANOCHAT_LOG_ALL_RANKS=1 to log on every rank (useful when a non-rank0 fails early).
+    log_all = os.environ.get("NANOCHAT_LOG_ALL_RANKS", "0") == "1"
+    if log_all or rank == 0:
         logger.info(message)
+
+
+def resolve_checkpoint_dir_and_step(source, device=None, phase=None, model_tag=None, step=None):
+    """Resolve the checkpoint directory + step that would be loaded.
+
+    This is a pure resolution helper (no model construction), useful for debugging.
+    """
+    model_dir = {
+        "base": "base_checkpoints",
+        "mid": "mid_checkpoints",
+        "sft": "chatsft_checkpoints",
+        "rl": "chatrl_checkpoints",
+    }[source]
+    base_dir = get_base_dir()
+    checkpoints_dir = os.path.join(base_dir, model_dir)
+
+    if model_tag is None:
+        model_tag = find_largest_model(checkpoints_dir)
+    checkpoint_dir = os.path.join(checkpoints_dir, model_tag)
+
+    if step is None:
+        step = find_last_step(checkpoint_dir)
+    return checkpoint_dir, step
 
 def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
     if rank == 0:
@@ -73,6 +100,24 @@ def build_model(checkpoint_dir, step, device, phase):
     # Hack: fix torch compile issue, which prepends all keys with _orig_mod.
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
     model_config_kwargs = meta_data["model_config"]
+
+    # Compatibility: some runs pad vocab_size (e.g. 50257 -> 50304) for efficiency.
+    # Occasionally meta_data may store the unpadded vocab (e.g. 50266) while the checkpoint
+    # weights are saved with a padded embedding table (e.g. 50304). In that case, prefer the
+    # checkpoint tensor shape so we can load strictly.
+    try:
+        ckpt_vocab = int(model_data.get("transformer.wte.weight").shape[0])
+        cfg_vocab = int(model_config_kwargs.get("vocab_size"))
+        if ckpt_vocab != cfg_vocab:
+            log0(
+                f"Vocab size mismatch (config={cfg_vocab}, checkpoint={ckpt_vocab}); "
+                "overriding config vocab_size to match checkpoint."
+            )
+            model_config_kwargs = dict(model_config_kwargs)
+            model_config_kwargs["vocab_size"] = ckpt_vocab
+    except Exception:
+        # If keys are missing or shapes unavailable, fall back to meta config.
+        pass
     log0(f"Building model with config: {model_config_kwargs}")
     model_config = GPTConfig(**model_config_kwargs)
     with torch.device("meta"):
@@ -87,11 +132,12 @@ def build_model(checkpoint_dir, step, device, phase):
     else:
         model.train()
     # Load the Tokenizer
-    # NOTE: nanoMoE-style training typically uses GPT-2 tokens (50257) but pads the model
-    # vocab_size up to 50304 for efficiency. In that case we still must use GPT-2 tokenization
-    # (otherwise token ids can exceed the embedding size and crash in torch.compile kernels).
+    # NOTE: nanoMoE-style training typically uses GPT-2 tokens (50257) and may:
+    # - pad the model vocab_size up to 50304 for efficiency, and/or
+    # - add nanochat chat special tokens (len(SPECIAL_TOKENS)=9) => 50257+9=50266.
+    # In all of these cases we must use GPT-2 tokenization (with nanochat special tokens).
     vocab_size = int(model_config_kwargs.get("vocab_size"))
-    use_tiktoken_gpt2 = vocab_size in {50257, 50304}
+    use_tiktoken_gpt2 = 50257 <= vocab_size <= 50304
     tokenizer = get_tokenizer(use_tiktoken_gpt2=use_tiktoken_gpt2)
     # Basic compatibility check: tokenizer ids must fit in the model embedding table.
     tok_vocab = int(tokenizer.get_vocab_size())
@@ -108,17 +154,25 @@ def find_largest_model(checkpoint_dir):
     model_tags = [f for f in os.listdir(checkpoint_dir) if os.path.isdir(os.path.join(checkpoint_dir, f))]
     if not model_tags:
         raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
-    # 1) normally all model tags are of the form d<number>, try that first:
+    # 1) Prefer model tags that encode depth as d<number> (e.g. d6, d20, d6_lr1e-4).
+    # Choose the largest depth, and if multiple tags share the same depth, pick the most recently updated.
     candidates = []
     for model_tag in model_tags:
         match = re.match(r"d(\d+)", model_tag)
         if match:
             model_depth = int(match.group(1))
-            candidates.append((model_depth, model_tag))
+            tag_path = os.path.join(checkpoint_dir, model_tag)
+            try:
+                mtime = os.path.getmtime(tag_path)
+            except OSError:
+                mtime = 0.0
+            candidates.append((model_depth, mtime, model_tag))
     if candidates:
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return candidates[0][1]
-    # 2) if that failed, take the most recently updated model:
+        # depth desc, mtime desc
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return candidates[0][2]
+
+    # 2) If depth can't be parsed from the tag name, fall back to most recently updated directory.
     model_tags.sort(key=lambda x: os.path.getmtime(os.path.join(checkpoint_dir, x)), reverse=True)
     return model_tags[0]
 

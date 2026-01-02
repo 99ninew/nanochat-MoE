@@ -585,7 +585,7 @@ class GPT(nn.Module):
         return optimizer
 
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, return_full_logits: bool = False):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -613,10 +613,15 @@ class GPT(nn.Module):
                 MANAGER.reset_router_z_loss()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            # Some evaluation code needs logits for all time steps; allow opting into that.
+            logits = self.lm_head(x) if return_full_logits else self.lm_head(x[:, [-1], :])
             loss = None
 
         return logits, loss
+
+    def get_device(self):
+        return self.transformer.wte.weight.device
+        return next(self.parameters()).device
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary

@@ -19,6 +19,7 @@ from contextlib import nullcontext
 
 from nanochat.common import compute_init, compute_cleanup, get_base_dir, print0, DummyWandb, autodetect_device_type
 from nanochat.checkpoint_manager import load_model
+from nanochat.checkpoint_manager import resolve_checkpoint_dir_and_step
 from nanochat.checkpoint_manager import save_checkpoint
 from nanochat.engine import Engine
 from scripts.chat_eval import run_chat_eval
@@ -50,6 +51,8 @@ embedding_lr = 0.2
 matrix_lr = 0.02
 weight_decay = 0.0
 init_lr_frac = 0.02
+learning_rate = 1e-4
+betas = (0.9, 0.95) 
 # evaluation and logging there of
 eval_every = 100
 eval_steps = 100
@@ -73,6 +76,21 @@ use_dummy_wandb = run == "dummy" or not master_process
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-sft", name=run, config=user_config, save_code=True)
 
 # Load the model and tokenizer
+try:
+    base_dir_for_ckpt = get_base_dir()
+    print(
+        f"[rank{ddp_rank}] NANOCHAT_BASE_DIR={os.environ.get('NANOCHAT_BASE_DIR')} | get_base_dir()={base_dir_for_ckpt}",
+        flush=True,
+    )
+    resolved_ckpt_dir, resolved_ckpt_step = resolve_checkpoint_dir_and_step(
+        source,
+        model_tag=model_tag,
+        step=step,
+    )
+    print(f"[rank{ddp_rank}] Will load ckpt from: {resolved_ckpt_dir} (step={resolved_ckpt_step})", flush=True)
+except Exception as e:
+    print(f"[rank{ddp_rank}] Failed to resolve ckpt dir/step: {e}", flush=True)
+
 model, tokenizer, meta = load_model(source, device, phase="train", model_tag=model_tag, step=step)
 orig_model = model # original, uncompiled model
 # model = torch.compile(model, dynamic=True) # doesn't work super well because of variable lengths of inputs
@@ -97,6 +115,10 @@ val_ds = SmolTalk(split="test") # general conversations, 24K rows (though we don
 
 def sft_data_generator(dataset, batch_size):
     pad_token_id = tokenizer.encode_special("<|assistant_end|>") # use <|assistant_end|> as the pad token is ok, these positions are masked in the loss
+    # Ensure we never feed sequences longer than the model block size.
+    # render_conversation returns a sequence that includes a BOS token, and we then create
+    # inputs/targets by shifting by 1, so cap to block_size+1 tokens.
+    max_tokens = int(getattr(model.config, "block_size", getattr(model.config, "sequence_len", 1024))) + 1
     # prepares a list of tokenized conversations into a batch and yields
     def collate_and_yield(batch):
         nrows = len(batch)
@@ -121,7 +143,7 @@ def sft_data_generator(dataset, batch_size):
     while True:
         for i in range(ddp_rank, len(dataset), ddp_world_size):
             doc = dataset[i]
-            ids, mask = tokenizer.render_conversation(doc)
+            ids, mask = tokenizer.render_conversation(doc, max_tokens=max_tokens)
             batch.append((ids, mask))
             if len(batch) == batch_size:
                 yield collate_and_yield(batch)
@@ -144,18 +166,30 @@ build_val_loader = lambda: sft_data_generator(val_ds, batch_size=device_batch_si
 
 # -----------------------------------------------------------------------------
 # Initialize the Optimizer
-
-optimizers = model.setup_optimizers(
-    unembedding_lr=unembedding_lr,
-    embedding_lr=embedding_lr,
-    matrix_lr=matrix_lr,
+# Initialize the Optimizer (AdamW for all parameters) - BEFORE DDP wrapping (matching nanoMoE)
+adamw_optimizer = model.configure_optimizers(
     weight_decay=weight_decay,
+    learning_rate=learning_rate,
+    betas=betas,
+    device_type=device_type,
 )
-# Set the initial learning rate as a fraction of the base learning rate
+optimizers = [adamw_optimizer]
 for opt in optimizers:
     for group in opt.param_groups:
         group["lr"] = group["lr"] * init_lr_frac
-        group["initial_lr"] = group["lr"] # save the initial learning so we can decay easily later
+        group["initial_lr"] = group["lr"] 
+
+# optimizers = model.setup_optimizers(
+#     unembedding_lr=unembedding_lr,
+#     embedding_lr=embedding_lr,
+#     matrix_lr=matrix_lr,
+#     weight_decay=weight_decay,
+# )
+# # Set the initial learning rate as a fraction of the base learning rate
+# for opt in optimizers:
+#     for group in opt.param_groups:
+#         group["lr"] = group["lr"] * init_lr_frac
+#         group["initial_lr"] = group["lr"] # save the initial learning so we can decay easily later
 
 # -----------------------------------------------------------------------------
 # Training loop
@@ -179,7 +213,7 @@ for step in range(num_iterations):
         for _ in range(eval_steps):
             val_inputs, val_targets = next(val_iter)
             with torch.no_grad(), autocast_ctx:
-                loss = model(val_inputs, val_targets)
+                _, loss = model(val_inputs, val_targets)
             losses.append(loss)
         val_loss = torch.stack(losses).mean() # average over eval_steps
         if ddp:
@@ -216,7 +250,7 @@ for step in range(num_iterations):
     for micro_step in range(grad_accum_steps):
         train_inputs, train_targets = next(train_iter)
         with autocast_ctx:
-            loss = model(train_inputs, train_targets)
+            _, loss = model(train_inputs, train_targets)
         train_loss = loss.detach() # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward() # accumulate the gradient
@@ -251,7 +285,8 @@ for step in range(num_iterations):
 if master_process:
     base_dir = get_base_dir()
     depth = model.config.n_layer
-    model_tag = f"d{depth}" # base the model tag on the depth of the base model
+    # model_tag = f"d{depth}" # base the model tag on the depth of the base model
+    model_tag = f"d{depth}_lr{learning_rate}"
     checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", model_tag)
     model_config_kwargs = model.config.__dict__ # slightly naughty, abusing the simplicity of GPTConfig, TODO nicer
     save_checkpoint(
