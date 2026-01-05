@@ -223,7 +223,10 @@ cd "$REPO_ROOT"
 # # Supervised Finetuning (domain adaptation to each sequence all by itself per row)
 WANDB_RUN=moe_sft
 # # train sft and re-eval right away (should see a small bump)
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=9e-5 --init_lr_frac=1.0
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=3e-4 --init_lr_frac=1.0
+
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=3e-4 --init_lr_frac=1.0 --num_epochs=4
 # torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft
 
 # # chat with the model over CLI! Leave out the -p to chat interactively

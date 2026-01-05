@@ -43,7 +43,8 @@ device_type = "" # cuda|cpu|mps (empty => autodetect)
 dtype = "bfloat16"
 device_batch_size = 4 # max to avoid OOM
 # optimization
-num_epochs = 1
+# num_epochs = 1
+num_epochs = 2
 num_iterations = -1 # override number of iterations (-1 = disable, use num_epochs to derive it)
 target_examples_per_step = 32
 unembedding_lr = 0.004
@@ -51,7 +52,7 @@ embedding_lr = 0.2
 matrix_lr = 0.02
 weight_decay = 0.0
 init_lr_frac = 0.02
-learning_rate = 1e-4
+learning_rate = 9e-5
 betas = (0.9, 0.95) 
 # evaluation and logging there of
 eval_every = 100
@@ -286,7 +287,7 @@ if master_process:
     base_dir = get_base_dir()
     depth = model.config.n_layer
     # model_tag = f"d{depth}" # base the model tag on the depth of the base model
-    model_tag = f"d{depth}_lr{learning_rate}"
+    model_tag = f"d{depth}_lr{learning_rate}_init{init_lr_frac}"
     checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", model_tag)
     model_config_kwargs = model.config.__dict__ # slightly naughty, abusing the simplicity of GPTConfig, TODO nicer
     save_checkpoint(
