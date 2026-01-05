@@ -48,8 +48,19 @@ def resolve_checkpoint_dir_and_step(source, device=None, phase=None, model_tag=N
     return checkpoint_dir, step
 
 def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
+    # Optimizer state is sharded across ranks, so every rank may write.
+    # Ensure the directory exists on all ranks (not just rank0).
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+    except Exception:
+        # Best-effort: directory creation above is usually sufficient.
+        pass
+
     if rank == 0:
-        os.makedirs(checkpoint_dir, exist_ok=True)
         # Save the model state parameters
         model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
         torch.save(model_data, model_path)
@@ -59,6 +70,7 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta_data, f, indent=2)
         logger.info(f"Saved metadata to: {meta_path}")
+
     # Note that optimizer state is sharded across ranks, so each rank must save its own.
     if optimizer_data is not None:
         optimizer_path = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")

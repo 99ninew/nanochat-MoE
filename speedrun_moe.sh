@@ -196,7 +196,8 @@ MASTER_PORT=${MASTER_PORT:-29501}
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 # Run torchrun from repo root so modules under the repo are importable
 cd "$REPO_ROOT"
-# MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts_moe.base_train -- --depth=20 --run=$WANDB_RUN
+WANDB_RUN=moe_base_train
+MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=20 --run=$WANDB_RUN
 # # evaluate the model on a larger chunk of train/val data and draw some samples
 # MASTER_PORT=$MASTER_PORT torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts_moe.base_loss
 # # evaluate the model on CORE tasks
@@ -221,12 +222,12 @@ cd "$REPO_ROOT"
 
 # # -----------------------------------------------------------------------------
 # # Supervised Finetuning (domain adaptation to each sequence all by itself per row)
-WANDB_RUN=moe_sft
+# WANDB_RUN=moe_sft
 # # train sft and re-eval right away (should see a small bump)
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=9e-5 --init_lr_frac=1.0
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=3e-4 --init_lr_frac=1.0
+# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=9e-5 --init_lr_frac=1.0
+# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=3e-4 --init_lr_frac=1.0
 
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=3e-4 --init_lr_frac=1.0 --num_epochs=4
+# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --learning_rate=3e-4 --init_lr_frac=1.0 --num_epochs=4
 # torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft
 
 # # chat with the model over CLI! Leave out the -p to chat interactively
